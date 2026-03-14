@@ -1,0 +1,82 @@
+version: "3.9"
+
+# ============================================================
+# MockPortfolioManagerBot — docker-compose
+# Targets: Linux / ARM64 (Raspberry Pi 5)
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # 1. Ollama — local LLM inference engine for reasoning and decision-making
+  # ----------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    platform: linux/arm64
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    # The Pi 5 has no GPU; Ollama will use CPU inference automatically.
+    # Allocate enough memory for qwen3:4b (~3 GB at Q4_K_M quantisation).
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ----------------------------------------------------------
+  # 2. Backend — FastAPI + APScheduler to manage the portfolio and interact with Ollama
+  # ----------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend
+    platform: linux/arm64
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist SQLite DB on the host so data survives container restarts
+      - ./data:/data
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen3:4b        # swap to phi4-mini if preferred
+      DB_PATH: /data/portfolio.db
+      INITIAL_CASH: "100000.0"
+      FETCH_INTERVAL_MINUTES: "10"
+      TICKERS_PER_CYCLE: "5"
+      POSITION_ALLOCATION_PCT: "0.05"
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ----------------------------------------------------------
+  # 3. Frontend — Streamlit dashboard
+  # ----------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    platform: linux/arm64
+    ports:
+      - "8501:8501"
+    environment:
+      API_BASE: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+# ----------------------------------------------------------
+# Named volumes
+# ----------------------------------------------------------
+volumes:
+  ollama_data:
+    # Stores downloaded Ollama models — persisted across rebuilds
